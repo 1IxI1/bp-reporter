@@ -35,10 +35,13 @@ async def test_four_measurement_session_and_deduplication(service: BPService) ->
     assert await service.process_outbox_once()  # first-left acknowledgement
     assert await service.process_outbox_once()  # switch-arm prompt
     assert await service.process_outbox_once()  # first-right acknowledgement
+    assert await service.process_outbox_once()  # second-right acknowledgement
     assert await service.process_outbox_once()  # final channel post
-    assert len(telegram.messages) == 4
+    assert len(telegram.messages) == 5
     assert "Первое измерение слева получено: 148/91, пульс 72" in telegram.messages[0]["text"]
+    assert "Второе измерение слева получено: 143/89, пульс 70" in telegram.messages[1]["text"]
     assert "Первое измерение справа получено: 151/92, пульс 73" in telegram.messages[2]["text"]
+    assert "Второе измерение справа получено: 147/90, пульс 71" in telegram.messages[3]["text"]
     final = telegram.messages[-1]
     assert final["chat_id"] == "-100200"
     assert final["silent"] is True
@@ -49,7 +52,7 @@ async def test_four_measurement_session_and_deduplication(service: BPService) ->
 
     debug = await service.debug_session()
     assert debug["session"]["status"] == "published"
-    assert debug["session"]["telegram_message_id"] == 4
+    assert debug["session"]["telegram_message_id"] == 5
 
 
 async def test_two_unsolicited_measurements_publish_as_right_arm(service: BPService) -> None:

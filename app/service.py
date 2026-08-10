@@ -434,7 +434,13 @@ class BPService:
                     connection,
                     dedupe_key=f"session:{session['id']}:switch-arm",
                     session_id=str(session["id"]),
-                    text="Два измерения слева получены. Переставьте манжету на правую руку.",
+                    text=(
+                        "Второе измерение слева получено: "
+                        f"{_format_number(measurement['systolic'])}/"
+                        f"{_format_number(measurement['diastolic'])}, пульс "
+                        f"{_format_number(measurement['pulse'])}. "
+                        "Переставьте манжету на правую руку."
+                    ),
                     now=now,
                 )
             elif new_count == 3:
@@ -452,6 +458,19 @@ class BPService:
                     now=now,
                 )
             return
+        self._insert_owner_outbox(
+            connection,
+            dedupe_key=f"session:{session['id']}:right-2",
+            session_id=str(session["id"]),
+            text=(
+                "Второе измерение справа получено: "
+                f"{_format_number(measurement['systolic'])}/"
+                f"{_format_number(measurement['diastolic'])}, пульс "
+                f"{_format_number(measurement['pulse'])}. "
+                "Серия завершена, итог отправляется в семейный канал."
+            ),
+            now=now,
+        )
         self._complete_session(connection, str(session["id"]), now)
 
     def _assign_to_auto(
