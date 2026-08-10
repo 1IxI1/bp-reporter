@@ -130,9 +130,9 @@ def create_app(
             raise HTTPException(status_code=503, detail="Withings OAuth is not configured")
         return RedirectResponse(await service.create_oauth_url(), status_code=302)
 
-    @application.head("/oauth/callback", status_code=204)
+    @application.head("/oauth/callback", status_code=200)
     async def oauth_callback_head() -> Response:
-        return Response(status_code=204)
+        return Response(status_code=200)
 
     @application.get("/oauth/callback", response_class=HTMLResponse)
     async def oauth_callback(
@@ -152,10 +152,10 @@ def create_app(
             "<h1>Withings connected</h1><p>You can close this window.</p>", status_code=200
         )
 
-    @application.head("/withings/webhook", status_code=204)
+    @application.head("/withings/webhook", status_code=200)
     async def withings_webhook_head(request: Request) -> Response:
         verify_webhook_token(request)
-        return Response(status_code=204)
+        return Response(status_code=200)
 
     @application.post("/withings/webhook", status_code=202)
     async def withings_webhook(request: Request) -> dict[str, bool]:

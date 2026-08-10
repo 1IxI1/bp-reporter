@@ -33,7 +33,7 @@ def test_webhook_head_and_duplicate_enqueue(tmp_path) -> None:
                 """
             )
         assert client.head("/withings/webhook?token=wrong").status_code == 403
-        assert client.head("/withings/webhook?token=test-webhook-secret").status_code == 204
+        assert client.head("/withings/webhook?token=test-webhook-secret").status_code == 200
 
         payload = {"userid": "42", "appli": "4", "startdate": "100", "enddate": "200"}
         first = client.post("/withings/webhook?token=test-webhook-secret", data=payload)
