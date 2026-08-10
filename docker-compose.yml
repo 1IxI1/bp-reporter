@@ -1,0 +1,10 @@
+services:
+  bp-reporter:
+    build: .
+    container_name: bp-reporter
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8787:8000"
