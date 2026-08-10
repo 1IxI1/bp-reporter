@@ -130,6 +130,10 @@ def create_app(
             raise HTTPException(status_code=503, detail="Withings OAuth is not configured")
         return RedirectResponse(await service.create_oauth_url(), status_code=302)
 
+    @application.head("/oauth/callback", status_code=204)
+    async def oauth_callback_head() -> Response:
+        return Response(status_code=204)
+
     @application.get("/oauth/callback", response_class=HTMLResponse)
     async def oauth_callback(
         code: str | None = None,
