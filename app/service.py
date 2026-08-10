@@ -415,12 +415,40 @@ class BPService:
                 "UPDATE sessions SET state = ?, updated_at = ? WHERE id = ?",
                 (states[new_count], now, session["id"]),
             )
-            if new_count == 2:
+            if new_count == 1:
+                self._insert_owner_outbox(
+                    connection,
+                    dedupe_key=f"session:{session['id']}:left-1",
+                    session_id=str(session["id"]),
+                    text=(
+                        "Первое измерение слева получено: "
+                        f"{_format_number(measurement['systolic'])}/"
+                        f"{_format_number(measurement['diastolic'])}, пульс "
+                        f"{_format_number(measurement['pulse'])}. "
+                        "Сделайте второе измерение на левой руке."
+                    ),
+                    now=now,
+                )
+            elif new_count == 2:
                 self._insert_owner_outbox(
                     connection,
                     dedupe_key=f"session:{session['id']}:switch-arm",
                     session_id=str(session["id"]),
                     text="Два измерения слева получены. Переставьте манжету на правую руку.",
+                    now=now,
+                )
+            elif new_count == 3:
+                self._insert_owner_outbox(
+                    connection,
+                    dedupe_key=f"session:{session['id']}:right-1",
+                    session_id=str(session["id"]),
+                    text=(
+                        "Первое измерение справа получено: "
+                        f"{_format_number(measurement['systolic'])}/"
+                        f"{_format_number(measurement['diastolic'])}, пульс "
+                        f"{_format_number(measurement['pulse'])}. "
+                        "Сделайте второе измерение на правой руке."
+                    ),
                     now=now,
                 )
             return

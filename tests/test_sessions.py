@@ -32,9 +32,13 @@ async def test_four_measurement_session_and_deduplication(service: BPService) ->
 
     telegram = service.telegram
     assert isinstance(telegram, FakeTelegram)
+    assert await service.process_outbox_once()  # first-left acknowledgement
     assert await service.process_outbox_once()  # switch-arm prompt
+    assert await service.process_outbox_once()  # first-right acknowledgement
     assert await service.process_outbox_once()  # final channel post
-    assert len(telegram.messages) == 2
+    assert len(telegram.messages) == 4
+    assert "Первое измерение слева получено: 148/91, пульс 72" in telegram.messages[0]["text"]
+    assert "Первое измерение справа получено: 151/92, пульс 73" in telegram.messages[2]["text"]
     final = telegram.messages[-1]
     assert final["chat_id"] == "-100200"
     assert final["silent"] is True
@@ -45,7 +49,7 @@ async def test_four_measurement_session_and_deduplication(service: BPService) ->
 
     debug = await service.debug_session()
     assert debug["session"]["status"] == "published"
-    assert debug["session"]["telegram_message_id"] == 2
+    assert debug["session"]["telegram_message_id"] == 4
 
 
 async def test_two_unsolicited_measurements_publish_as_right_arm(service: BPService) -> None:
@@ -95,7 +99,8 @@ async def test_manual_session_times_out_without_publication(service: BPService) 
     assert debug["session"]["status"] == "timed_out"
     assert debug["session"]["publish_status"] == "none"
 
-    assert await service.process_outbox_once()
+    assert await service.process_outbox_once()  # first-left acknowledgement
+    assert await service.process_outbox_once()  # timeout notification
     telegram = service.telegram
     assert isinstance(telegram, FakeTelegram)
-    assert "Неполная серия не опубликована" in telegram.messages[0]["text"]
+    assert "Неполная серия не опубликована" in telegram.messages[1]["text"]
