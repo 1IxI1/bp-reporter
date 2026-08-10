@@ -49,6 +49,7 @@ async def test_four_measurement_session_and_deduplication(service: BPService) ->
     assert "148/91/72 · 143/89/70" in final["text"]
     assert "Правая: 149/91, пульс 72" in final["text"]
     assert "Разница П−Л: +3/+1 мм рт. ст." in final["text"]
+    assert final["text"].endswith("<i>Тонометр Whithings</i>")
 
     debug = await service.debug_session()
     assert debug["session"]["status"] == "published"
@@ -70,11 +71,20 @@ async def test_two_unsolicited_measurements_publish_as_right_arm(service: BPServ
     assert debug["session"]["status"] == "completed"
     assert [row["arm"] for row in debug["measurements"]] == ["right", "right"]
 
-    assert await service.process_outbox_once()
+    assert await service.process_outbox_once()  # first-right acknowledgement
+    assert await service.process_outbox_once()  # second-right acknowledgement
+    assert await service.process_outbox_once()  # final channel post
     telegram = service.telegram
     assert isinstance(telegram, FakeTelegram)
-    assert "Правая: 141/87, пульс 69" in telegram.messages[0]["text"]
-    assert "Левая" not in telegram.messages[0]["text"]
+    assert (
+        "Первое измерение справа без /bp получено: 140/86, пульс 68" in telegram.messages[0]["text"]
+    )
+    assert (
+        "Второе измерение справа без /bp получено: 142/88, пульс 70" in telegram.messages[1]["text"]
+    )
+    assert "Правая: 141/87, пульс 69" in telegram.messages[2]["text"]
+    assert "Левая" not in telegram.messages[2]["text"]
+    assert telegram.messages[2]["text"].endswith("<i>Тонометр Whithings</i>")
 
 
 async def test_backfill_is_stored_but_not_assigned(service: BPService) -> None:

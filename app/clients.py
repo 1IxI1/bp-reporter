@@ -336,6 +336,7 @@ class TelegramClient:
             {
                 "chat_id": chat_id,
                 "text": text,
+                "parse_mode": "HTML",
                 "disable_notification": self.settings.telegram_silent if silent is None else silent,
             },
         )

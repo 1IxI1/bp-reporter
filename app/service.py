@@ -523,6 +523,19 @@ class BPService:
                 """,
                 (session_id, now, measurement["id"]),
             )
+            self._insert_owner_outbox(
+                connection,
+                dedupe_key=f"session:{session_id}:auto-right-1",
+                session_id=session_id,
+                text=(
+                    "Первое измерение справа без /bp получено: "
+                    f"{_format_number(measurement['systolic'])}/"
+                    f"{_format_number(measurement['diastolic'])}, пульс "
+                    f"{_format_number(measurement['pulse'])}. "
+                    "Ожидаю второе измерение в течение часа."
+                ),
+                now=now,
+            )
             return
 
         connection.execute(
@@ -532,6 +545,19 @@ class BPService:
             WHERE id = ?
             """,
             (session["id"], now, measurement["id"]),
+        )
+        self._insert_owner_outbox(
+            connection,
+            dedupe_key=f"session:{session['id']}:auto-right-2",
+            session_id=str(session["id"]),
+            text=(
+                "Второе измерение справа без /bp получено: "
+                f"{_format_number(measurement['systolic'])}/"
+                f"{_format_number(measurement['diastolic'])}, пульс "
+                f"{_format_number(measurement['pulse'])}. "
+                "Итог отправляется в семейный канал."
+            ),
+            now=now,
         )
         self._complete_session(connection, str(session["id"]), now)
 
@@ -991,6 +1017,7 @@ def format_session_message(
         if len(right) != 2:
             raise ValueError("automatic right-arm session must contain two measurements")
         lines.extend(_arm_lines("Правая", right, _arm_values(right)))
+    lines.extend(["", "<i>Тонометр Whithings</i>"])
     return "\n".join(lines)
 
 
