@@ -37,15 +37,35 @@ class FakeWithings:
 class FakeTelegram:
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] = []
+        self.callback_answers: list[dict[str, str]] = []
+        self.removed_keyboards: list[dict[str, int | str]] = []
 
     async def close(self) -> None:
         pass
 
     async def send_message(
-        self, chat_id: int | str, text: str, *, silent: bool | None = None
+        self,
+        chat_id: int | str,
+        text: str,
+        *,
+        silent: bool | None = None,
+        reply_markup: dict[str, Any] | None = None,
     ) -> SentMessage:
-        self.messages.append({"chat_id": chat_id, "text": text, "silent": silent})
+        self.messages.append(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "silent": silent,
+                "reply_markup": reply_markup,
+            }
+        )
         return SentMessage(message_id=len(self.messages), chat_id=chat_id)
+
+    async def answer_callback_query(self, callback_query_id: str, text: str) -> None:
+        self.callback_answers.append({"id": callback_query_id, "text": text})
+
+    async def remove_inline_keyboard(self, chat_id: int | str, message_id: int) -> None:
+        self.removed_keyboards.append({"chat_id": chat_id, "message_id": message_id})
 
     async def get_updates(self, offset: int | None) -> list[dict[str, Any]]:
         return []

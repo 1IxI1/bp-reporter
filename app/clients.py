@@ -330,15 +330,19 @@ class TelegramClient:
         text: str,
         *,
         silent: bool | None = None,
+        reply_markup: dict[str, Any] | None = None,
     ) -> SentMessage:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_notification": self.settings.telegram_silent if silent is None else silent,
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         result = await self.call(
             "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_notification": self.settings.telegram_silent if silent is None else silent,
-            },
+            payload,
         )
         if not isinstance(result, dict) or result.get("message_id") is None:
             raise TelegramAmbiguousError("Telegram response did not contain message_id")
@@ -351,7 +355,7 @@ class TelegramClient:
     async def get_updates(self, offset: int | None) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {
             "timeout": 25,
-            "allowed_updates": ["message"],
+            "allowed_updates": ["message", "callback_query"],
         }
         if offset is not None:
             payload["offset"] = offset
@@ -359,6 +363,22 @@ class TelegramClient:
         if not isinstance(result, list):
             raise TelegramDefinitiveError("Telegram getUpdates returned an invalid result")
         return [update for update in result if isinstance(update, dict)]
+
+    async def answer_callback_query(self, callback_query_id: str, text: str) -> None:
+        await self.call(
+            "answerCallbackQuery",
+            {"callback_query_id": callback_query_id, "text": text},
+        )
+
+    async def remove_inline_keyboard(self, chat_id: int | str, message_id: int) -> None:
+        await self.call(
+            "editMessageReplyMarkup",
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reply_markup": {"inline_keyboard": []},
+            },
+        )
 
     async def get_me(self) -> dict[str, Any]:
         result = await self.call("getMe", {})

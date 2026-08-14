@@ -79,12 +79,103 @@ async def test_two_unsolicited_measurements_publish_as_right_arm(service: BPServ
     assert (
         "Первое измерение справа без /bp получено: 140/86, пульс 68" in telegram.messages[0]["text"]
     )
+    button = telegram.messages[0]["reply_markup"]["inline_keyboard"][0][0]
+    assert button["text"] == "Начать полный цикл"
+    assert button["callback_data"].startswith("bp-full:")
     assert (
         "Второе измерение справа без /bp получено: 142/88, пульс 70" in telegram.messages[1]["text"]
     )
     assert "Правая: 141/87, пульс 69" in telegram.messages[2]["text"]
     assert "Левая" not in telegram.messages[2]["text"]
     assert telegram.messages[2]["text"].endswith("<i>Тонометр Whithings</i>")
+
+
+async def test_inline_button_promotes_first_auto_measurement_to_full_cycle(
+    service: BPService,
+) -> None:
+    clock = [1_786_000_000]
+    service.now = lambda: clock[0]  # type: ignore[method-assign]
+    await service.ingest_groups("42", [measure_group(20, clock[0], 140, 86, 68)], source="poll")
+
+    assert await service.process_outbox_once()
+    telegram = service.telegram
+    assert isinstance(telegram, FakeTelegram)
+    button = telegram.messages[0]["reply_markup"]["inline_keyboard"][0][0]
+    callback = {
+        "update_id": 500,
+        "callback_query": {
+            "id": "callback-1",
+            "from": {"id": 100},
+            "message": {
+                "message_id": 1,
+                "chat": {"id": 100, "type": "private"},
+            },
+            "data": button["callback_data"],
+        },
+    }
+
+    unauthorized = {
+        **callback,
+        "update_id": 499,
+        "callback_query": {
+            **callback["callback_query"],
+            "id": "callback-unauthorized",
+            "from": {"id": 999},
+        },
+    }
+    await service.process_telegram_update(unauthorized)
+    debug = await service.debug_session()
+    assert debug["session"]["mode"] == "auto_right"
+    assert telegram.callback_answers == []
+
+    await service.process_telegram_update(callback)
+    debug = await service.debug_session()
+    assert debug["session"]["mode"] == "four_arm"
+    assert debug["session"]["state"] == "WAIT_LEFT_2"
+    assert [row["arm"] for row in debug["measurements"]] == ["left"]
+    assert telegram.callback_answers == [
+        {
+            "id": "callback-1",
+            "text": "Полный цикл начат: первое измерение засчитано слева.",
+        }
+    ]
+    assert telegram.removed_keyboards == [{"chat_id": 100, "message_id": 1}]
+
+    assert await service.process_outbox_once()
+    assert "Сделайте второе измерение на левой руке" in telegram.messages[1]["text"]
+
+    for grpid, systolic, diastolic, pulse in (
+        (21, 142, 88, 70),
+        (22, 150, 90, 72),
+        (23, 148, 89, 71),
+    ):
+        clock[0] += 1
+        await service.ingest_groups(
+            "42",
+            [measure_group(grpid, clock[0], systolic, diastolic, pulse)],
+            source="poll",
+        )
+
+    debug = await service.debug_session()
+    assert debug["session"]["status"] == "completed"
+    assert [row["arm"] for row in debug["measurements"]] == [
+        "left",
+        "left",
+        "right",
+        "right",
+    ]
+
+    for _ in range(4):
+        assert await service.process_outbox_once()
+    final = telegram.messages[-1]
+    assert final["chat_id"] == "-100200"
+    assert "Левая: 141/87, пульс 69" in final["text"]
+    assert "Правая: 149/90, пульс 72" in final["text"]
+
+    await service.process_telegram_update(callback)
+    debug = await service.debug_session()
+    assert len(debug["measurements"]) == 4
+    assert telegram.callback_answers[-1]["text"].startswith("Серия уже завершена")
 
 
 async def test_backfill_is_stored_but_not_assigned(service: BPService) -> None:

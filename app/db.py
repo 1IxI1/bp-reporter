@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS telegram_outbox (
     kind TEXT NOT NULL,
     chat_id TEXT NOT NULL,
     message_text TEXT NOT NULL,
+    reply_markup TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
     next_attempt_at INTEGER NOT NULL DEFAULT 0,
@@ -127,6 +128,12 @@ class Database:
             connection = self._connect()
             try:
                 connection.executescript(SCHEMA)
+                outbox_columns = {
+                    str(row["name"])
+                    for row in connection.execute("PRAGMA table_info(telegram_outbox)")
+                }
+                if "reply_markup" not in outbox_columns:
+                    connection.execute("ALTER TABLE telegram_outbox ADD COLUMN reply_markup TEXT")
                 connection.execute(
                     "UPDATE webhook_events SET status = 'pending' WHERE status = 'processing'"
                 )

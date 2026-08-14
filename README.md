@@ -11,6 +11,8 @@ to a private Telegram channel.
 - After the fourth measurement, one silent summary is posted to the family channel.
 - Without `/bp`, two fresh measurements taken within one hour are treated as right-arm
   measurements and published together.
+- After the first measurement without `/bp`, an owner-only inline button can start the
+  full cycle and count that measurement as the first left-arm reading.
 - Old, stale, incomplete, and duplicate measurements are stored but never published.
 - Sessions, OAuth tokens, webhook events, deduplication, and Telegram outbox state survive
   restarts.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import secrets
 import sqlite3
@@ -17,6 +18,7 @@ from app.clients import (
     TelegramAmbiguousError,
     TelegramClient,
     TelegramDefinitiveError,
+    TelegramError,
     WithingsClient,
     WithingsError,
 )
@@ -535,6 +537,16 @@ class BPService:
                     "Ожидаю второе измерение в течение часа."
                 ),
                 now=now,
+                reply_markup={
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "Начать полный цикл",
+                                "callback_data": f"bp-full:{session_id}",
+                            }
+                        ]
+                    ]
+                },
             )
             return
 
@@ -609,6 +621,7 @@ class BPService:
         session_id: str | None,
         text: str,
         now: int,
+        reply_markup: dict[str, Any] | None = None,
     ) -> None:
         chat_id = self.settings.telegram_private_chat_id or self.settings.telegram_owner_user_id
         if chat_id is None:
@@ -621,6 +634,7 @@ class BPService:
             chat_id=str(chat_id),
             text=text,
             now=now,
+            reply_markup=reply_markup,
         )
 
     @staticmethod
@@ -633,15 +647,25 @@ class BPService:
         chat_id: str,
         text: str,
         now: int,
+        reply_markup: dict[str, Any] | None = None,
     ) -> None:
         connection.execute(
             """
             INSERT OR IGNORE INTO telegram_outbox(
-                dedupe_key, session_id, kind, chat_id, message_text,
+                dedupe_key, session_id, kind, chat_id, message_text, reply_markup,
                 status, next_attempt_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
             """,
-            (dedupe_key, session_id, kind, chat_id, text, now, now),
+            (
+                dedupe_key,
+                session_id,
+                kind,
+                chat_id,
+                text,
+                json.dumps(reply_markup, ensure_ascii=True) if reply_markup is not None else None,
+                now,
+                now,
+            ),
         )
 
     async def process_outbox_once(self) -> bool:
@@ -665,8 +689,14 @@ class BPService:
             outbox = dict(row)
 
         try:
+            reply_markup = (
+                json.loads(str(outbox["reply_markup"])) if outbox["reply_markup"] else None
+            )
             sent = await self.telegram.send_message(
-                outbox["chat_id"], str(outbox["message_text"]), silent=self.settings.telegram_silent
+                outbox["chat_id"],
+                str(outbox["message_text"]),
+                silent=self.settings.telegram_silent,
+                reply_markup=reply_markup,
             )
         except TelegramDefinitiveError as error:
             attempts = int(outbox["attempts"]) + 1
@@ -857,8 +887,111 @@ class BPService:
             return await self.session_status_text()
         return None
 
+    async def start_full_cycle_from_auto(
+        self, *, session_id: str, owner_user_id: int
+    ) -> tuple[str, bool]:
+        now = self.now()
+        async with self.database.transaction() as connection:
+            self._expire_sessions_in_transaction(connection, now)
+            session = connection.execute(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if session is None:
+                return "Серия не найдена или уже недоступна.", False
+            if session["mode"] == "four_arm" and session["status"] == "active":
+                return "Полный цикл уже начат.", False
+            if (
+                session["mode"] != "auto_right"
+                or session["status"] != "active"
+                or session["state"] != "WAIT_RIGHT_2"
+            ):
+                return "Серия уже завершена или истекла. Начните новую командой /bp.", False
+
+            measurements = connection.execute(
+                """
+                SELECT id FROM measurements
+                WHERE session_id = ? ORDER BY measured_at, id
+                """,
+                (session_id,),
+            ).fetchall()
+            if len(measurements) != 1:
+                return "Первое измерение уже нельзя перенести в полный цикл.", False
+
+            connection.execute(
+                """
+                UPDATE sessions
+                SET mode = 'four_arm', state = 'WAIT_LEFT_2', updated_at = ?,
+                    expires_at = ?, created_by_user_id = ?
+                WHERE id = ?
+                """,
+                (
+                    now,
+                    now + self.settings.session_timeout_minutes * 60,
+                    owner_user_id,
+                    session_id,
+                ),
+            )
+            connection.execute(
+                "UPDATE measurements SET arm = 'left' WHERE id = ?",
+                (measurements[0]["id"],),
+            )
+            self._insert_owner_outbox(
+                connection,
+                dedupe_key=f"session:{session_id}:promoted-to-full",
+                session_id=session_id,
+                text=(
+                    "Полный цикл начат. Первое измерение засчитано как первое слева. "
+                    "Сделайте второе измерение на левой руке."
+                ),
+                now=now,
+            )
+        return "Полный цикл начат: первое измерение засчитано слева.", True
+
+    async def _process_telegram_callback(self, callback: dict[str, Any]) -> None:
+        sender = callback.get("from") or {}
+        message = callback.get("message") or {}
+        chat = message.get("chat") or {}
+        data = callback.get("data")
+        callback_id = callback.get("id")
+        if not isinstance(data, str) or not data.startswith("bp-full:"):
+            return
+        try:
+            owner_user_id = int(sender.get("id"))
+            chat_id = int(chat.get("id"))
+            message_id = int(message.get("message_id"))
+        except (TypeError, ValueError):
+            return
+        if (
+            not isinstance(callback_id, str)
+            or self.settings.telegram_owner_user_id is None
+            or owner_user_id != self.settings.telegram_owner_user_id
+            or str(chat.get("type", "")) != "private"
+            or (
+                self.settings.telegram_private_chat_id is not None
+                and chat_id != self.settings.telegram_private_chat_id
+            )
+        ):
+            return
+
+        session_id = data.removeprefix("bp-full:")
+        response, _ = await self.start_full_cycle_from_auto(
+            session_id=session_id, owner_user_id=owner_user_id
+        )
+        try:
+            await self.telegram.answer_callback_query(callback_id, response)
+        except TelegramError:
+            logger.warning("telegram_callback_answer_failed")
+        try:
+            await self.telegram.remove_inline_keyboard(chat_id, message_id)
+        except TelegramError:
+            logger.warning("telegram_callback_keyboard_remove_failed")
+
     async def process_telegram_update(self, update: dict[str, Any]) -> None:
         update_id = update.get("update_id")
+        callback = update.get("callback_query")
+        if update_id is not None and isinstance(callback, dict):
+            await self._process_telegram_callback(callback)
+            return
         message = update.get("message")
         if update_id is None or not isinstance(message, dict):
             return
