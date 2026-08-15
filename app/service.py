@@ -692,10 +692,11 @@ class BPService:
             reply_markup = (
                 json.loads(str(outbox["reply_markup"])) if outbox["reply_markup"] else None
             )
+            is_channel = str(outbox["chat_id"]) == str(self.settings.telegram_channel_id)
             sent = await self.telegram.send_message(
                 outbox["chat_id"],
                 str(outbox["message_text"]),
-                silent=self.settings.telegram_silent,
+                silent=False if is_channel else self.settings.telegram_silent,
                 reply_markup=reply_markup,
             )
         except TelegramDefinitiveError as error:
@@ -1054,7 +1055,7 @@ class BPService:
         now = self.now()
         if target == "channel":
             chat_id = self.settings.telegram_channel_id
-            text = "BP Reporter: тестовая тихая публикация."
+            text = "BP Reporter: тестовая публикация."
         elif target == "private":
             chat_id = self.settings.telegram_private_chat_id or self.settings.telegram_owner_user_id
             text = "BP Reporter подключен. Тестовое тихое сообщение."

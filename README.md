@@ -8,7 +8,7 @@ to a private Telegram channel.
 
 - `/bp` starts a four-measurement session: two on the left arm, then two on the right.
 - The owner receives a private confirmation after every measurement.
-- After the fourth measurement, one silent summary is posted to the family channel.
+- After the fourth measurement, one summary with notifications is posted to the family channel.
 - Without `/bp`, two fresh measurements taken within one hour are treated as right-arm
   measurements and published together.
 - After the first measurement without `/bp`, an owner-only inline button can start the
@@ -86,8 +86,8 @@ notifications use `appli=4`; this value was verified against the live API.
 ## Telegram Setup
 
 Start a private chat with the bot, add it as a channel administrator, and configure the
-owner, private-chat, and channel IDs. `TELEGRAM_SILENT=true` sends all messages with
-`disable_notification=true`.
+owner, private-chat, and channel IDs. Channel publications always notify subscribers;
+`TELEGRAM_SILENT=true` keeps private bot messages silent.
 
 Available owner-only private commands: `/bp`, `/status`, `/cancel`, and `/retry`.
 

@@ -42,9 +42,10 @@ async def test_four_measurement_session_and_deduplication(service: BPService) ->
     assert "Второе измерение слева получено: 143/89, пульс 70" in telegram.messages[1]["text"]
     assert "Первое измерение справа получено: 151/92, пульс 73" in telegram.messages[2]["text"]
     assert "Второе измерение справа получено: 147/90, пульс 71" in telegram.messages[3]["text"]
+    assert all(message["silent"] is True for message in telegram.messages[:-1])
     final = telegram.messages[-1]
     assert final["chat_id"] == "-100200"
-    assert final["silent"] is True
+    assert final["silent"] is False
     assert "Левая: 146/90, пульс 71" in final["text"]
     assert "148/91/72 · 143/89/70" in final["text"]
     assert "Правая: 149/91, пульс 72" in final["text"]
