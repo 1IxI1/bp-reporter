@@ -137,10 +137,25 @@ class Database:
                 connection.execute(
                     "UPDATE webhook_events SET status = 'pending' WHERE status = 'processing'"
                 )
+                # Editing the same message to the same text is safe to retry after a restart.
+                connection.execute(
+                    "UPDATE telegram_outbox SET status = 'pending', "
+                    "last_error = 'service restarted during edit' "
+                    "WHERE status = 'sending' AND kind = 'edit'"
+                )
                 # A send interrupted after Telegram accepted it cannot be retried safely.
                 connection.execute(
                     "UPDATE telegram_outbox SET status = 'uncertain', "
                     "last_error = 'service restarted during send' WHERE status = 'sending'"
+                )
+                connection.execute(
+                    """
+                    UPDATE sessions SET publish_status = 'uncertain'
+                    WHERE id IN (
+                        SELECT session_id FROM telegram_outbox
+                        WHERE kind = 'final' AND status = 'uncertain'
+                    )
+                    """
                 )
                 connection.commit()
             finally:

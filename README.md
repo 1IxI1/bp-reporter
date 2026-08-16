@@ -11,6 +11,8 @@ to a private Telegram channel.
 - After the fourth measurement, one summary with notifications is posted to the family channel.
 - Without `/bp`, two fresh measurements taken within one hour are treated as right-arm
   measurements and published together.
+- If another automatic pair is completed within 15 minutes, the first pair becomes the
+  left arm and its channel post is updated with the new pair as the right arm.
 - After the first measurement without `/bp`, an owner-only inline button can start the
   full cycle and count that measurement as the first left-arm reading.
 - Old, stale, incomplete, and duplicate measurements are stored but never published.

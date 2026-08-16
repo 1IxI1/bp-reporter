@@ -91,6 +91,335 @@ async def test_two_unsolicited_measurements_publish_as_right_arm(service: BPServ
     assert telegram.messages[2]["text"].endswith("<i>Тонометр Whithings</i>")
 
 
+async def test_consecutive_auto_pairs_edit_first_report_as_two_arm_cycle(
+    service: BPService,
+) -> None:
+    clock = [1_786_000_000]
+    service.now = lambda: clock[0]  # type: ignore[method-assign]
+
+    await service.ingest_groups("42", [measure_group(30, clock[0], 147, 77, 75)], source="poll")
+    clock[0] += 60
+    await service.ingest_groups("42", [measure_group(31, clock[0], 145, 75, 73)], source="poll")
+    for _ in range(3):
+        assert await service.process_outbox_once()
+
+    clock[0] += 13 * 60
+    await service.ingest_groups("42", [measure_group(32, clock[0], 147, 78, 78)], source="poll")
+    clock[0] += 2 * 60
+    await service.ingest_groups("42", [measure_group(33, clock[0], 141, 77, 73)], source="poll")
+    for _ in range(3):
+        assert await service.process_outbox_once()
+
+    telegram = service.telegram
+    assert isinstance(telegram, FakeTelegram)
+    channel_messages = [message for message in telegram.messages if message["chat_id"] == "-100200"]
+    assert len(channel_messages) == 1
+    assert len(telegram.edited_messages) == 1
+    edit = telegram.edited_messages[0]
+    assert edit["chat_id"] == "-100200"
+    assert edit["message_id"] == 3
+    edited = edit["text"]
+    assert "Левая: 146/76, пульс 74" in edited
+    assert "147/77/75 · 145/75/73" in edited
+    assert "Правая: 144/78, пульс 76" in edited
+    assert "147/78/78 · 141/77/73" in edited
+
+    async with service.database.read() as connection:
+        combined = connection.execute(
+            "SELECT id, status, mode, telegram_message_id FROM sessions "
+            "WHERE mode = 'auto_four_arm'"
+        ).fetchone()
+        merged = connection.execute(
+            "SELECT status, publish_status FROM sessions WHERE state = 'MERGED'"
+        ).fetchone()
+        arms = connection.execute(
+            "SELECT arm FROM measurements WHERE session_id = ? ORDER BY measured_at, id",
+            (combined["id"],),
+        ).fetchall()
+    assert combined["status"] == "published"
+    assert combined["telegram_message_id"] == 3
+    assert dict(merged) == {"status": "merged", "publish_status": "merged"}
+    assert [row["arm"] for row in arms] == ["left", "left", "right", "right"]
+
+    duplicate = await service.ingest_groups(
+        "42", [measure_group(33, clock[0], 141, 77, 73)], source="webhook"
+    )
+    assert duplicate == {"fetched": 1, "inserted": 0, "duplicates": 1, "invalid": 0}
+    assert not await service.process_outbox_once()
+    assert len(telegram.edited_messages) == 1
+
+
+async def test_consecutive_auto_pairs_merge_before_first_report_is_sent(
+    service: BPService,
+) -> None:
+    clock = [1_786_000_000]
+    service.now = lambda: clock[0]  # type: ignore[method-assign]
+
+    for grpid, systolic in ((40, 140), (41, 142)):
+        await service.ingest_groups(
+            "42", [measure_group(grpid, clock[0], systolic, 80, 70)], source="poll"
+        )
+        clock[0] += 60
+    retry_at = clock[0] + 2 * 60
+    async with service.database.transaction() as connection:
+        connection.execute(
+            """
+            UPDATE telegram_outbox
+            SET attempts = 3, next_attempt_at = ?, last_error = 'TelegramDefinitiveError'
+            WHERE kind = 'final'
+            """,
+            (retry_at,),
+        )
+    for grpid, systolic in ((42, 150), (43, 148)):
+        await service.ingest_groups(
+            "42", [measure_group(grpid, clock[0], systolic, 90, 72)], source="poll"
+        )
+        clock[0] += 60
+
+    while await service.process_outbox_once():
+        pass
+
+    telegram = service.telegram
+    assert isinstance(telegram, FakeTelegram)
+    channel_messages = [message for message in telegram.messages if message["chat_id"] == "-100200"]
+    assert len(channel_messages) == 1
+    assert "Левая: 141/80, пульс 70" in channel_messages[0]["text"]
+    assert "Правая: 149/90, пульс 72" in channel_messages[0]["text"]
+    assert telegram.messages[-1] == channel_messages[0]
+    assert telegram.edited_messages == []
+    async with service.database.read() as connection:
+        final_rows = connection.execute(
+            """
+            SELECT status, attempts, next_attempt_at, last_error
+            FROM telegram_outbox WHERE kind = 'final' ORDER BY id
+            """
+        ).fetchall()
+    assert [row["status"] for row in final_rows] == ["superseded", "sent"]
+    assert [row["attempts"] for row in final_rows] == [3, 3]
+    assert [row["next_attempt_at"] for row in final_rows] == [retry_at, retry_at]
+    assert final_rows[1]["last_error"] is None
+
+
+async def test_auto_pairs_more_than_fifteen_minutes_apart_publish_separately(
+    service: BPService,
+) -> None:
+    clock = [1_786_000_000]
+    service.now = lambda: clock[0]  # type: ignore[method-assign]
+
+    for grpid in (50, 51):
+        await service.ingest_groups(
+            "42", [measure_group(grpid, clock[0], 140, 80, 70)], source="poll"
+        )
+        clock[0] += 1
+    while await service.process_outbox_once():
+        pass
+
+    clock[0] += 15 * 60
+    for grpid in (52, 53):
+        await service.ingest_groups(
+            "42", [measure_group(grpid, clock[0], 150, 90, 72)], source="poll"
+        )
+        clock[0] += 1
+    while await service.process_outbox_once():
+        pass
+
+    telegram = service.telegram
+    assert isinstance(telegram, FakeTelegram)
+    channel_messages = [message for message in telegram.messages if message["chat_id"] == "-100200"]
+    assert len(channel_messages) == 2
+    assert telegram.edited_messages == []
+
+
+async def test_auto_pairs_do_not_merge_across_an_intervening_manual_cycle(
+    service: BPService,
+) -> None:
+    clock = [1_786_000_000]
+    service.now = lambda: clock[0]  # type: ignore[method-assign]
+
+    for grpid in (60, 61):
+        await service.ingest_groups(
+            "42", [measure_group(grpid, clock[0], 140, 80, 70)], source="poll"
+        )
+        clock[0] += 1
+    while await service.process_outbox_once():
+        pass
+
+    await service.start_manual_session(100)
+    for grpid in (62, 63, 64, 65):
+        await service.ingest_groups(
+            "42", [measure_group(grpid, clock[0], 145, 85, 72)], source="poll"
+        )
+        clock[0] += 1
+    while await service.process_outbox_once():
+        pass
+
+    for grpid in (66, 67):
+        await service.ingest_groups(
+            "42", [measure_group(grpid, clock[0], 150, 90, 74)], source="poll"
+        )
+        clock[0] += 1
+    while await service.process_outbox_once():
+        pass
+
+    telegram = service.telegram
+    assert isinstance(telegram, FakeTelegram)
+    channel_messages = [message for message in telegram.messages if message["chat_id"] == "-100200"]
+    assert len(channel_messages) == 3
+    assert telegram.edited_messages == []
+
+
+async def test_overlapping_latest_cycle_blocks_merge_with_an_older_pair(
+    service: BPService,
+) -> None:
+    base = 1_786_000_000
+    clock = [base]
+    service.now = lambda: clock[0]  # type: ignore[method-assign]
+
+    for grpid in (68, 69):
+        await service.ingest_groups(
+            "42", [measure_group(grpid, clock[0], 140, 80, 70)], source="poll"
+        )
+        clock[0] += 1
+    while await service.process_outbox_once():
+        pass
+
+    clock[0] += 16 * 60
+    for grpid in (70, 71):
+        await service.ingest_groups(
+            "42", [measure_group(grpid, clock[0], 145, 85, 72)], source="poll"
+        )
+        clock[0] += 1
+    while await service.process_outbox_once():
+        pass
+
+    async with service.database.transaction() as connection:
+        sessions = connection.execute(
+            "SELECT id FROM sessions WHERE mode = 'auto_right' ORDER BY started_at"
+        ).fetchall()
+        for session_id, timestamps in zip(
+            (sessions[0]["id"], sessions[1]["id"]),
+            ((base + 100, base + 250), (base + 200, base + 300)),
+            strict=True,
+        ):
+            measurements = connection.execute(
+                "SELECT id FROM measurements WHERE session_id = ? ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            for measurement, measured_at in zip(measurements, timestamps, strict=True):
+                connection.execute(
+                    "UPDATE measurements SET measured_at = ? WHERE id = ?",
+                    (measured_at, measurement["id"]),
+                )
+        connection.execute(
+            "UPDATE sessions SET publish_status = 'uncertain' WHERE id = ?",
+            (sessions[1]["id"],),
+        )
+
+    clock[0] = base + 350
+    await service.ingest_groups("42", [measure_group(72, base + 275, 150, 90, 74)], source="poll")
+    await service.ingest_groups("42", [measure_group(73, base + 350, 148, 88, 72)], source="poll")
+    while await service.process_outbox_once():
+        pass
+
+    telegram = service.telegram
+    assert isinstance(telegram, FakeTelegram)
+    channel_messages = [message for message in telegram.messages if message["chat_id"] == "-100200"]
+    assert len(channel_messages) == 3
+    assert telegram.edited_messages == []
+
+
+async def test_auto_pair_merge_is_reconciled_after_first_report_finishes_sending(
+    service: BPService,
+) -> None:
+    clock = [1_786_000_000]
+    service.now = lambda: clock[0]  # type: ignore[method-assign]
+
+    for grpid in (70, 71):
+        await service.ingest_groups(
+            "42", [measure_group(grpid, clock[0], 140, 80, 70)], source="poll"
+        )
+        clock[0] += 1
+    assert await service.process_outbox_once()
+    assert await service.process_outbox_once()
+
+    async with service.database.transaction() as connection:
+        first = connection.execute(
+            "SELECT id FROM sessions WHERE mode = 'auto_right' ORDER BY started_at LIMIT 1"
+        ).fetchone()
+        final = connection.execute(
+            "SELECT id FROM telegram_outbox WHERE session_id = ? AND kind = 'final'",
+            (first["id"],),
+        ).fetchone()
+        connection.execute(
+            "UPDATE telegram_outbox SET status = 'sending' WHERE id = ?", (final["id"],)
+        )
+
+    for grpid in (72, 73):
+        await service.ingest_groups(
+            "42", [measure_group(grpid, clock[0], 150, 90, 72)], source="poll"
+        )
+        clock[0] += 1
+
+    async with service.database.transaction() as connection:
+        connection.execute(
+            """
+            UPDATE telegram_outbox
+            SET status = 'sent', telegram_message_id = 3, sent_at = ?
+            WHERE id = ?
+            """,
+            (clock[0], final["id"]),
+        )
+        connection.execute(
+            """
+            UPDATE sessions
+            SET status = 'published', publish_status = 'sent', telegram_message_id = 3
+            WHERE id = ?
+            """,
+            (first["id"],),
+        )
+
+    while await service.process_outbox_once():
+        pass
+
+    telegram = service.telegram
+    assert isinstance(telegram, FakeTelegram)
+    assert len(telegram.edited_messages) == 1
+    assert telegram.edited_messages[0]["message_id"] == 3
+    assert "Левая: 140/80, пульс 70" in telegram.edited_messages[0]["text"]
+    assert "Правая: 150/90, пульс 72" in telegram.edited_messages[0]["text"]
+
+
+async def test_interrupted_final_send_is_marked_uncertain_and_warns_owner(
+    service: BPService,
+) -> None:
+    clock = [1_786_000_000]
+    service.now = lambda: clock[0]  # type: ignore[method-assign]
+
+    for grpid in (80, 81):
+        await service.ingest_groups(
+            "42", [measure_group(grpid, clock[0], 140, 80, 70)], source="poll"
+        )
+        clock[0] += 1
+    assert await service.process_outbox_once()
+    assert await service.process_outbox_once()
+    async with service.database.transaction() as connection:
+        connection.execute("UPDATE telegram_outbox SET status = 'sending' WHERE kind = 'final'")
+
+    await service.database.initialize()
+    assert await service.recover_interrupted_outbox() == 1
+    assert await service.recover_interrupted_outbox() == 0
+
+    async with service.database.read() as connection:
+        session = connection.execute(
+            "SELECT publish_status FROM sessions WHERE mode = 'auto_right'"
+        ).fetchone()
+    assert session["publish_status"] == "uncertain"
+    assert await service.process_outbox_once()
+    telegram = service.telegram
+    assert isinstance(telegram, FakeTelegram)
+    assert "Telegram не подтвердил итоговую публикацию" in telegram.messages[-1]["text"]
+
+
 async def test_inline_button_promotes_first_auto_measurement_to_full_cycle(
     service: BPService,
 ) -> None:

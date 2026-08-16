@@ -34,6 +34,14 @@ async def test_initialize_adds_reply_markup_to_existing_outbox(tmp_path) -> None
             ) VALUES ('existing', 'owner', '100', 'message', 1)
             """
         )
+        connection.execute(
+            """
+            INSERT INTO telegram_outbox(
+                dedupe_key, kind, chat_id, message_text, status, created_at,
+                telegram_message_id
+            ) VALUES ('edit', 'edit', '-100200', 'updated', 'sending', 2, 42)
+            """
+        )
 
     database = Database(path)
     await database.initialize()
@@ -43,5 +51,9 @@ async def test_initialize_adds_reply_markup_to_existing_outbox(tmp_path) -> None
         existing = connection.execute(
             "SELECT message_text, reply_markup FROM telegram_outbox WHERE dedupe_key = 'existing'"
         ).fetchone()
+        edit_status = connection.execute(
+            "SELECT status, last_error FROM telegram_outbox WHERE dedupe_key = 'edit'"
+        ).fetchone()
     assert "reply_markup" in columns
     assert existing == ("message", None)
+    assert edit_status == ("pending", "service restarted during edit")

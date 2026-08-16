@@ -37,6 +37,7 @@ class FakeWithings:
 class FakeTelegram:
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] = []
+        self.edited_messages: list[dict[str, Any]] = []
         self.callback_answers: list[dict[str, str]] = []
         self.removed_keyboards: list[dict[str, int | str]] = []
 
@@ -60,6 +61,15 @@ class FakeTelegram:
             }
         )
         return SentMessage(message_id=len(self.messages), chat_id=chat_id)
+
+    async def edit_message(
+        self,
+        chat_id: int | str,
+        message_id: int,
+        text: str,
+    ) -> SentMessage:
+        self.edited_messages.append({"chat_id": chat_id, "message_id": message_id, "text": text})
+        return SentMessage(message_id=message_id, chat_id=chat_id)
 
     async def answer_callback_query(self, callback_query_id: str, text: str) -> None:
         self.callback_answers.append({"id": callback_query_id, "text": text})

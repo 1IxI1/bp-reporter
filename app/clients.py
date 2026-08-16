@@ -314,6 +314,15 @@ class TelegramClient:
         if response.status_code >= 500:
             raise TelegramAmbiguousError("Telegram request outcome is unknown")
         data = _safe_json(response, "Telegram returned invalid JSON")
+        if (
+            method == "editMessageText"
+            and response.status_code == 400
+            and "message is not modified" in str(data.get("description", "")).lower()
+        ):
+            return {
+                "message_id": payload["message_id"],
+                "chat": {"id": payload["chat_id"]},
+            }
         if response.status_code == 429 or (
             isinstance(data, dict) and int(data.get("error_code", 0)) == 429
         ):
@@ -343,6 +352,29 @@ class TelegramClient:
         result = await self.call(
             "sendMessage",
             payload,
+        )
+        if not isinstance(result, dict) or result.get("message_id") is None:
+            raise TelegramAmbiguousError("Telegram response did not contain message_id")
+        result_chat = result.get("chat") or {}
+        return SentMessage(
+            message_id=int(result["message_id"]),
+            chat_id=result_chat.get("id", chat_id),
+        )
+
+    async def edit_message(
+        self,
+        chat_id: int | str,
+        message_id: int,
+        text: str,
+    ) -> SentMessage:
+        result = await self.call(
+            "editMessageText",
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                "parse_mode": "HTML",
+            },
         )
         if not isinstance(result, dict) or result.get("message_id") is None:
             raise TelegramAmbiguousError("Telegram response did not contain message_id")

@@ -65,6 +65,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         await database.initialize()
+        await service.recover_interrupted_outbox()
         if start_workers:
             runtime.start()
         yield

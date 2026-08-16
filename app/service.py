@@ -28,6 +28,8 @@ from app.models import ParsedMeasurement, parse_measure_group
 
 logger = logging.getLogger(__name__)
 
+AUTO_REPORT_MERGE_WINDOW_SECONDS = 15 * 60
+
 
 class BPService:
     def __init__(
@@ -590,6 +592,10 @@ class BPService:
             "SELECT * FROM measurements WHERE session_id = ? ORDER BY measured_at, id",
             (session_id,),
         ).fetchall()
+        if session["mode"] == "auto_right" and self._merge_recent_auto_session(
+            connection, session, rows, now
+        ):
+            return
         message = format_session_message(session, rows, self.settings)
         if self.settings.telegram_channel_id is None:
             connection.execute(
@@ -612,6 +618,126 @@ class BPService:
             text=message,
             now=now,
         )
+
+    def _merge_recent_auto_session(
+        self,
+        connection: sqlite3.Connection,
+        session: sqlite3.Row,
+        rows: list[sqlite3.Row],
+        now: int,
+    ) -> bool:
+        if len(rows) != 2:
+            return False
+        first_measured_at = min(int(row["measured_at"]) for row in rows)
+        last_measured_at = max(int(row["measured_at"]) for row in rows)
+        previous = connection.execute(
+            """
+            SELECT s.*, MAX(m.measured_at) AS last_measured_at,
+                COUNT(m.id) AS measurement_count
+            FROM sessions AS s
+            JOIN measurements AS m ON m.session_id = s.id
+            WHERE s.id != ? AND m.userid = ?
+            GROUP BY s.id
+            ORDER BY MAX(m.measured_at) DESC
+            LIMIT 1
+            """,
+            (
+                session["id"],
+                rows[0]["userid"],
+            ),
+        ).fetchone()
+        previous_last_measured_at = int(previous["last_measured_at"]) if previous else None
+        if (
+            previous is None
+            or previous_last_measured_at is None
+            or previous_last_measured_at > first_measured_at
+            or last_measured_at - previous_last_measured_at > AUTO_REPORT_MERGE_WINDOW_SECONDS
+            or previous["mode"] != "auto_right"
+            or int(previous["measurement_count"]) != 2
+            or previous["status"] not in ("completed", "published")
+            or previous["publish_status"] not in ("pending", "sent")
+        ):
+            return False
+
+        final_outbox = connection.execute(
+            """
+            SELECT * FROM telegram_outbox
+            WHERE session_id = ? AND kind = 'final'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (previous["id"],),
+        ).fetchone()
+        if final_outbox is None or final_outbox["status"] not in ("pending", "sent"):
+            return False
+        target_message_id = previous["telegram_message_id"] or final_outbox["telegram_message_id"]
+        if final_outbox["status"] == "sent" and target_message_id is None:
+            return False
+
+        connection.execute(
+            "UPDATE measurements SET arm = 'left' WHERE session_id = ?",
+            (previous["id"],),
+        )
+        connection.execute(
+            "UPDATE measurements SET session_id = ?, arm = 'right' WHERE session_id = ?",
+            (previous["id"], session["id"]),
+        )
+        connection.execute(
+            """
+            UPDATE sessions
+            SET mode = 'auto_four_arm', status = 'completed', state = 'COMPLETE',
+                completed_at = ?, updated_at = ?, publish_status = 'pending'
+            WHERE id = ?
+            """,
+            (int(session["completed_at"] or now), now, previous["id"]),
+        )
+        connection.execute(
+            """
+            UPDATE sessions
+            SET status = 'merged', state = 'MERGED', updated_at = ?,
+                publish_status = 'merged'
+            WHERE id = ?
+            """,
+            (now, session["id"]),
+        )
+
+        merged_session = connection.execute(
+            "SELECT * FROM sessions WHERE id = ?", (previous["id"],)
+        ).fetchone()
+        merged_rows = connection.execute(
+            "SELECT * FROM measurements WHERE session_id = ? ORDER BY measured_at, id",
+            (previous["id"],),
+        ).fetchall()
+        message = format_session_message(merged_session, merged_rows, self.settings)
+        if final_outbox["status"] == "pending":
+            connection.execute(
+                "UPDATE telegram_outbox SET status = 'superseded' WHERE id = ?",
+                (final_outbox["id"],),
+            )
+            self._insert_outbox(
+                connection,
+                dedupe_key=f"session:{previous['id']}:merge:{session['id']}:final",
+                session_id=str(previous["id"]),
+                kind="final",
+                chat_id=str(final_outbox["chat_id"]),
+                text=message,
+                now=now,
+                attempts=int(final_outbox["attempts"]),
+                next_attempt_at=int(final_outbox["next_attempt_at"]),
+                last_error=final_outbox["last_error"],
+            )
+            return True
+
+        self._insert_outbox(
+            connection,
+            dedupe_key=f"session:{previous['id']}:merge:{session['id']}:edit",
+            session_id=str(previous["id"]),
+            kind="edit",
+            chat_id=str(final_outbox["chat_id"]),
+            text=message,
+            now=now,
+            telegram_message_id=(int(target_message_id) if target_message_id is not None else None),
+        )
+        return True
 
     def _insert_owner_outbox(
         self,
@@ -648,13 +774,18 @@ class BPService:
         text: str,
         now: int,
         reply_markup: dict[str, Any] | None = None,
+        telegram_message_id: int | None = None,
+        attempts: int = 0,
+        next_attempt_at: int | None = None,
+        last_error: str | None = None,
     ) -> None:
         connection.execute(
             """
             INSERT OR IGNORE INTO telegram_outbox(
                 dedupe_key, session_id, kind, chat_id, message_text, reply_markup,
-                status, next_attempt_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                status, attempts, next_attempt_at, last_error, created_at,
+                telegram_message_id
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
             """,
             (
                 dedupe_key,
@@ -663,8 +794,11 @@ class BPService:
                 chat_id,
                 text,
                 json.dumps(reply_markup, ensure_ascii=True) if reply_markup is not None else None,
+                attempts,
+                next_attempt_at if next_attempt_at is not None else now,
+                last_error,
                 now,
-                now,
+                telegram_message_id,
             ),
         )
 
@@ -683,22 +817,44 @@ class BPService:
             ).fetchone()
             if row is None:
                 return False
+            if row["kind"] == "final":
+                session = connection.execute(
+                    "SELECT * FROM sessions WHERE id = ?", (row["session_id"],)
+                ).fetchone()
+                if session is not None and session["mode"] == "auto_right":
+                    rows = connection.execute(
+                        "SELECT * FROM measurements WHERE session_id = ? ORDER BY measured_at, id",
+                        (session["id"],),
+                    ).fetchall()
+                    if self._merge_recent_auto_session(connection, session, rows, now):
+                        connection.execute(
+                            "UPDATE telegram_outbox SET status = 'superseded' WHERE id = ?",
+                            (row["id"],),
+                        )
+                        return True
             connection.execute(
                 "UPDATE telegram_outbox SET status = 'sending' WHERE id = ?", (row["id"],)
             )
             outbox = dict(row)
 
         try:
-            reply_markup = (
-                json.loads(str(outbox["reply_markup"])) if outbox["reply_markup"] else None
-            )
-            is_channel = str(outbox["chat_id"]) == str(self.settings.telegram_channel_id)
-            sent = await self.telegram.send_message(
-                outbox["chat_id"],
-                str(outbox["message_text"]),
-                silent=False if is_channel else self.settings.telegram_silent,
-                reply_markup=reply_markup,
-            )
+            if outbox["kind"] == "edit":
+                sent = await self.telegram.edit_message(
+                    outbox["chat_id"],
+                    int(outbox["telegram_message_id"]),
+                    str(outbox["message_text"]),
+                )
+            else:
+                reply_markup = (
+                    json.loads(str(outbox["reply_markup"])) if outbox["reply_markup"] else None
+                )
+                is_channel = str(outbox["chat_id"]) == str(self.settings.telegram_channel_id)
+                sent = await self.telegram.send_message(
+                    outbox["chat_id"],
+                    str(outbox["message_text"]),
+                    silent=False if is_channel else self.settings.telegram_silent,
+                    reply_markup=reply_markup,
+                )
         except TelegramDefinitiveError as error:
             attempts = int(outbox["attempts"]) + 1
             retry_after = error.retry_after or min(300, 2 ** min(attempts, 8))
@@ -712,7 +868,7 @@ class BPService:
                     """,
                     (status, attempts, now + retry_after, _safe_error(error), outbox["id"]),
                 )
-                if status == "failed" and outbox["kind"] == "final":
+                if status == "failed" and outbox["kind"] in ("final", "edit"):
                     connection.execute(
                         "UPDATE sessions SET publish_status = 'failed' WHERE id = ?",
                         (outbox["session_id"],),
@@ -720,6 +876,33 @@ class BPService:
             logger.warning("telegram_send_failed", extra={"attempts": attempts, "status": status})
             return True
         except TelegramAmbiguousError as error:
+            if outbox["kind"] == "edit":
+                attempts = int(outbox["attempts"]) + 1
+                status = "failed" if attempts >= 8 else "pending"
+                async with self.database.transaction() as connection:
+                    connection.execute(
+                        """
+                        UPDATE telegram_outbox
+                        SET status = ?, attempts = ?, next_attempt_at = ?, last_error = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            status,
+                            attempts,
+                            now + min(300, 2 ** min(attempts, 8)),
+                            _safe_error(error),
+                            outbox["id"],
+                        ),
+                    )
+                    if status == "failed":
+                        connection.execute(
+                            "UPDATE sessions SET publish_status = 'failed' WHERE id = ?",
+                            (outbox["session_id"],),
+                        )
+                logger.warning(
+                    "telegram_edit_retry", extra={"attempts": attempts, "status": status}
+                )
+                return True
             async with self.database.transaction() as connection:
                 connection.execute(
                     """
@@ -754,7 +937,7 @@ class BPService:
                 """,
                 (self.now(), sent.message_id, outbox["id"]),
             )
-            if outbox["kind"] == "final":
+            if outbox["kind"] in ("final", "edit"):
                 connection.execute(
                     """
                     UPDATE sessions
@@ -765,6 +948,32 @@ class BPService:
                 )
         logger.info("telegram_message_sent", extra={"kind": outbox["kind"]})
         return True
+
+    async def recover_interrupted_outbox(self) -> int:
+        now = self.now()
+        async with self.database.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, session_id FROM telegram_outbox AS source
+                WHERE kind = 'final' AND status = 'uncertain'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM telegram_outbox AS warning
+                        WHERE warning.dedupe_key = 'outbox:' || source.id || ':uncertain'
+                    )
+                """
+            ).fetchall()
+            for row in rows:
+                self._insert_owner_outbox(
+                    connection,
+                    dedupe_key=f"outbox:{row['id']}:uncertain",
+                    session_id=row["session_id"],
+                    text=(
+                        "Telegram не подтвердил итоговую публикацию. Автоповтор отключен, "
+                        "чтобы не создать дубликат. Проверьте канал и /status."
+                    ),
+                    now=now,
+                )
+        return len(rows)
 
     async def start_manual_session(self, owner_user_id: int) -> str:
         now = self.now()
@@ -1136,7 +1345,7 @@ def format_session_message(
     mode = str(session["mode"])
     left = [row for row in rows if row["arm"] == "left"]
     right = [row for row in rows if row["arm"] == "right"]
-    if mode == "four_arm":
+    if mode in ("four_arm", "auto_four_arm"):
         if len(left) != 2 or len(right) != 2:
             raise ValueError("four-arm session must contain two measurements per arm")
         left_values = _arm_values(left)
