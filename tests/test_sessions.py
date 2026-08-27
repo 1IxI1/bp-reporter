@@ -38,17 +38,29 @@ async def test_four_measurement_session_and_deduplication(service: BPService) ->
     assert await service.process_outbox_once()  # second-right acknowledgement
     assert await service.process_outbox_once()  # final channel post
     assert len(telegram.messages) == 5
-    assert "Первое измерение слева получено: 148/91, пульс 72" in telegram.messages[0]["text"]
-    assert "Второе измерение слева получено: 143/89, пульс 70" in telegram.messages[1]["text"]
-    assert "Первое измерение справа получено: 151/92, пульс 73" in telegram.messages[2]["text"]
-    assert "Второе измерение справа получено: 147/90, пульс 71" in telegram.messages[3]["text"]
+    assert (
+        "Первое измерение слева получено: 148/91 (proj. 157/86), пульс 72"
+        in telegram.messages[0]["text"]
+    )
+    assert (
+        "Второе измерение слева получено: 143/89 (proj. 153/85), пульс 70"
+        in telegram.messages[1]["text"]
+    )
+    assert (
+        "Первое измерение справа получено: 151/92 (proj. 160/86), пульс 73"
+        in telegram.messages[2]["text"]
+    )
+    assert (
+        "Второе измерение справа получено: 147/90 (proj. 156/85), пульс 71"
+        in telegram.messages[3]["text"]
+    )
     assert all(message["silent"] is True for message in telegram.messages[:-1])
     final = telegram.messages[-1]
     assert final["chat_id"] == "-100200"
     assert final["silent"] is False
-    assert "Левая: 146/90, пульс 71" in final["text"]
+    assert "Левая: 146/90 (proj. 155/85), пульс 71" in final["text"]
     assert "148/91/72 · 143/89/70" in final["text"]
-    assert "Правая: 149/91, пульс 72" in final["text"]
+    assert "Правая: 149/91 (proj. 158/85), пульс 72" in final["text"]
     assert "Разница П−Л: +3/+1 мм рт. ст." in final["text"]
     assert final["text"].endswith("<i>Тонометр Whithings</i>")
 
@@ -78,15 +90,17 @@ async def test_two_unsolicited_measurements_publish_as_right_arm(service: BPServ
     telegram = service.telegram
     assert isinstance(telegram, FakeTelegram)
     assert (
-        "Первое измерение справа без /bp получено: 140/86, пульс 68" in telegram.messages[0]["text"]
+        "Первое измерение справа без /bp получено: 140/86 (proj. 150/82), пульс 68"
+        in telegram.messages[0]["text"]
     )
     button = telegram.messages[0]["reply_markup"]["inline_keyboard"][0][0]
     assert button["text"] == "Начать полный цикл"
     assert button["callback_data"].startswith("bp-full:")
     assert (
-        "Второе измерение справа без /bp получено: 142/88, пульс 70" in telegram.messages[1]["text"]
+        "Второе измерение справа без /bp получено: 142/88 (proj. 152/84), пульс 70"
+        in telegram.messages[1]["text"]
     )
-    assert "Правая: 141/87, пульс 69" in telegram.messages[2]["text"]
+    assert "Правая: 141/87 (proj. 151/83), пульс 69" in telegram.messages[2]["text"]
     assert "Левая" not in telegram.messages[2]["text"]
     assert telegram.messages[2]["text"].endswith("<i>Тонометр Whithings</i>")
 
@@ -119,9 +133,9 @@ async def test_consecutive_auto_pairs_edit_first_report_as_two_arm_cycle(
     assert edit["chat_id"] == "-100200"
     assert edit["message_id"] == 3
     edited = edit["text"]
-    assert "Левая: 146/76, пульс 74" in edited
+    assert "Левая: 146/76 (proj. 155/63), пульс 74" in edited
     assert "147/77/75 · 145/75/73" in edited
-    assert "Правая: 144/78, пульс 76" in edited
+    assert "Правая: 144/78 (proj. 154/67), пульс 76" in edited
     assert "147/78/78 · 141/77/73" in edited
 
     async with service.database.read() as connection:
@@ -183,8 +197,8 @@ async def test_consecutive_auto_pairs_merge_before_first_report_is_sent(
     assert isinstance(telegram, FakeTelegram)
     channel_messages = [message for message in telegram.messages if message["chat_id"] == "-100200"]
     assert len(channel_messages) == 1
-    assert "Левая: 141/80, пульс 70" in channel_messages[0]["text"]
-    assert "Правая: 149/90, пульс 72" in channel_messages[0]["text"]
+    assert "Левая: 141/80 (proj. 151/72), пульс 70" in channel_messages[0]["text"]
+    assert "Правая: 149/90 (proj. 158/84), пульс 72" in channel_messages[0]["text"]
     assert telegram.messages[-1] == channel_messages[0]
     assert telegram.edited_messages == []
     async with service.database.read() as connection:
@@ -385,8 +399,8 @@ async def test_auto_pair_merge_is_reconciled_after_first_report_finishes_sending
     assert isinstance(telegram, FakeTelegram)
     assert len(telegram.edited_messages) == 1
     assert telegram.edited_messages[0]["message_id"] == 3
-    assert "Левая: 140/80, пульс 70" in telegram.edited_messages[0]["text"]
-    assert "Правая: 150/90, пульс 72" in telegram.edited_messages[0]["text"]
+    assert "Левая: 140/80 (proj. 150/73), пульс 70" in telegram.edited_messages[0]["text"]
+    assert "Правая: 150/90 (proj. 159/83), пульс 72" in telegram.edited_messages[0]["text"]
 
 
 async def test_interrupted_final_send_is_marked_uncertain_and_warns_owner(
@@ -499,8 +513,8 @@ async def test_inline_button_promotes_first_auto_measurement_to_full_cycle(
         assert await service.process_outbox_once()
     final = telegram.messages[-1]
     assert final["chat_id"] == "-100200"
-    assert "Левая: 141/87, пульс 69" in final["text"]
-    assert "Правая: 149/90, пульс 72" in final["text"]
+    assert "Левая: 141/87 (proj. 151/83), пульс 69" in final["text"]
+    assert "Правая: 149/90 (proj. 158/84), пульс 72" in final["text"]
 
     await service.process_telegram_update(callback)
     debug = await service.debug_session()
