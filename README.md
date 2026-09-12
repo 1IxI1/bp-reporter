@@ -91,7 +91,7 @@ Start a private chat with the bot, add it as a channel administrator, and config
 owner, private-chat, and channel IDs. Channel publications always notify subscribers;
 `TELEGRAM_SILENT=true` keeps private bot messages silent.
 
-Available owner-only private commands: `/bp`, `/status`, `/cancel`, and `/retry`.
+The private bot menu lists the owner-only commands `/bp`, `/status`, `/cancel`, and `/retry`.
 
 ## History Import
 

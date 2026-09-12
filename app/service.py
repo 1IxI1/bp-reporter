@@ -29,6 +29,12 @@ from app.models import ParsedMeasurement, parse_measure_group
 logger = logging.getLogger(__name__)
 
 AUTO_REPORT_MERGE_WINDOW_SECONDS = 15 * 60
+TELEGRAM_COMMANDS = [
+    {"command": "bp", "description": "Начать цикл: 2 слева, 2 справа"},
+    {"command": "status", "description": "Показать состояние текущего цикла"},
+    {"command": "cancel", "description": "Отменить текущий цикл /bp"},
+    {"command": "retry", "description": "Отменить цикл и начать заново"},
+]
 # Personal projection fitted to paired BPM Connect and auscultatory readings.
 BP_PROJECTION_SYS_INTERCEPT = Decimal("31.936")
 BP_PROJECTION_SYS_FACTOR = Decimal("0.8459")
@@ -1095,6 +1101,13 @@ class BPService:
         if command == "/status":
             return await self.session_status_text()
         return None
+
+    async def configure_telegram_commands(self) -> bool:
+        chat_id = self.settings.telegram_private_chat_id or self.settings.telegram_owner_user_id
+        if chat_id is None:
+            return False
+        await self.telegram.set_commands(chat_id, TELEGRAM_COMMANDS)
+        return True
 
     async def start_full_cycle_from_auto(
         self, *, session_id: str, owner_user_id: int

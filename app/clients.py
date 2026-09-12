@@ -412,6 +412,19 @@ class TelegramClient:
             },
         )
 
+    async def set_commands(
+        self,
+        chat_id: int | str,
+        commands: list[dict[str, str]],
+    ) -> None:
+        await self.call(
+            "setMyCommands",
+            {
+                "commands": commands,
+                "scope": {"type": "chat", "chat_id": chat_id},
+            },
+        )
+
     async def get_me(self) -> dict[str, Any]:
         result = await self.call("getMe", {})
         if not isinstance(result, dict):

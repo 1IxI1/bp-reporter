@@ -24,6 +24,9 @@ class Runtime:
             self.tasks.append(asyncio.create_task(self._poll_loop(), name="withings-poller"))
         if self.service.settings.telegram_bot_token:
             self.tasks.append(asyncio.create_task(self._telegram_loop(), name="telegram-updates"))
+            self.tasks.append(
+                asyncio.create_task(self._telegram_commands_loop(), name="telegram-command-menu")
+            )
 
     async def stop(self) -> None:
         for task in self.tasks:
@@ -94,3 +97,17 @@ class Runtime:
             except Exception:
                 logger.exception("telegram_updates_worker_error")
                 await asyncio.sleep(5)
+
+    async def _telegram_commands_loop(self) -> None:
+        while True:
+            try:
+                configured = await self.service.configure_telegram_commands()
+                if configured:
+                    logger.info("telegram_commands_configured")
+                return
+            except TelegramError:
+                logger.warning("telegram_commands_configuration_failed")
+                await asyncio.sleep(30)
+            except Exception:
+                logger.exception("telegram_commands_worker_error")
+                await asyncio.sleep(30)

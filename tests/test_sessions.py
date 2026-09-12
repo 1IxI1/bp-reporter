@@ -522,6 +522,23 @@ async def test_inline_button_promotes_first_auto_measurement_to_full_cycle(
     assert telegram.callback_answers[-1]["text"].startswith("Серия уже завершена")
 
 
+async def test_telegram_command_menu_is_scoped_to_owner(service: BPService) -> None:
+    assert await service.configure_telegram_commands()
+    telegram = service.telegram
+    assert isinstance(telegram, FakeTelegram)
+    assert telegram.command_menus == [
+        {
+            "chat_id": 100,
+            "commands": [
+                {"command": "bp", "description": "Начать цикл: 2 слева, 2 справа"},
+                {"command": "status", "description": "Показать состояние текущего цикла"},
+                {"command": "cancel", "description": "Отменить текущий цикл /bp"},
+                {"command": "retry", "description": "Отменить цикл и начать заново"},
+            ],
+        }
+    ]
+
+
 async def test_backfill_is_stored_but_not_assigned(service: BPService) -> None:
     now = 1_767_225_700
     service.now = lambda: now  # type: ignore[method-assign]

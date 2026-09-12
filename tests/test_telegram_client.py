@@ -48,6 +48,8 @@ async def test_inline_keyboard_and_callback_api_payloads(tmp_path) -> None:
     await client.get_updates(20)
     await client.answer_callback_query("callback-1", "started")
     await client.remove_inline_keyboard(100, 10)
+    commands = [{"command": "bp", "description": "Начать цикл"}]
+    await client.set_commands(100, commands)
     await http.aclose()
 
     assert calls[0][0].endswith("/sendMessage")
@@ -65,3 +67,10 @@ async def test_inline_keyboard_and_callback_api_payloads(tmp_path) -> None:
     assert calls[3][1]["allowed_updates"] == ["message", "callback_query"]
     assert calls[4][1] == {"callback_query_id": "callback-1", "text": "started"}
     assert calls[5][1]["reply_markup"] == {"inline_keyboard": []}
+    assert calls[6] == (
+        "/bottest-token/setMyCommands",
+        {
+            "commands": commands,
+            "scope": {"type": "chat", "chat_id": 100},
+        },
+    )

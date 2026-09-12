@@ -38,6 +38,7 @@ class FakeTelegram:
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] = []
         self.edited_messages: list[dict[str, Any]] = []
+        self.command_menus: list[dict[str, Any]] = []
         self.callback_answers: list[dict[str, str]] = []
         self.removed_keyboards: list[dict[str, int | str]] = []
 
@@ -82,6 +83,13 @@ class FakeTelegram:
 
     async def get_me(self) -> dict[str, Any]:
         return {"id": 1, "username": "test_bot"}
+
+    async def set_commands(
+        self,
+        chat_id: int | str,
+        commands: list[dict[str, str]],
+    ) -> None:
+        self.command_menus.append({"chat_id": chat_id, "commands": commands})
 
 
 @pytest.fixture
