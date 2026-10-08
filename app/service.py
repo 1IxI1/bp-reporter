@@ -35,11 +35,6 @@ TELEGRAM_COMMANDS = [
     {"command": "cancel", "description": "Отменить текущий цикл /bp"},
     {"command": "retry", "description": "Отменить цикл и начать заново"},
 ]
-# Personal projection fitted to paired BPM Connect and auscultatory readings.
-BP_PROJECTION_SYS_INTERCEPT = Decimal("31.936")
-BP_PROJECTION_SYS_FACTOR = Decimal("0.8459")
-BP_PROJECTION_DIA_OFFSET = Decimal("27.819")
-BP_PROJECTION_PP_FACTOR = Decimal("0.5810")
 
 
 class BPService:
@@ -437,7 +432,7 @@ class BPService:
                     session_id=str(session["id"]),
                     text=(
                         "Первое измерение слева получено: "
-                        f"{_format_bp_with_projection(measurement)}, пульс "
+                        f"{_format_bp(measurement)}, пульс "
                         f"{_format_number(measurement['pulse'])}. "
                         "Сделайте второе измерение на левой руке."
                     ),
@@ -450,7 +445,7 @@ class BPService:
                     session_id=str(session["id"]),
                     text=(
                         "Второе измерение слева получено: "
-                        f"{_format_bp_with_projection(measurement)}, пульс "
+                        f"{_format_bp(measurement)}, пульс "
                         f"{_format_number(measurement['pulse'])}. "
                         "Переставьте манжету на правую руку."
                     ),
@@ -463,7 +458,7 @@ class BPService:
                     session_id=str(session["id"]),
                     text=(
                         "Первое измерение справа получено: "
-                        f"{_format_bp_with_projection(measurement)}, пульс "
+                        f"{_format_bp(measurement)}, пульс "
                         f"{_format_number(measurement['pulse'])}. "
                         "Сделайте второе измерение на правой руке."
                     ),
@@ -476,7 +471,7 @@ class BPService:
             session_id=str(session["id"]),
             text=(
                 "Второе измерение справа получено: "
-                f"{_format_bp_with_projection(measurement)}, пульс "
+                f"{_format_bp(measurement)}, пульс "
                 f"{_format_number(measurement['pulse'])}. "
                 "Серия завершена, итог отправляется в семейный канал."
             ),
@@ -540,7 +535,7 @@ class BPService:
                 session_id=session_id,
                 text=(
                     "Первое измерение справа без /bp получено: "
-                    f"{_format_bp_with_projection(measurement)}, пульс "
+                    f"{_format_bp(measurement)}, пульс "
                     f"{_format_number(measurement['pulse'])}. "
                     "Ожидаю второе измерение в течение часа."
                 ),
@@ -572,7 +567,7 @@ class BPService:
             session_id=str(session["id"]),
             text=(
                 "Второе измерение справа без /bp получено: "
-                f"{_format_bp_with_projection(measurement)}, пульс "
+                f"{_format_bp(measurement)}, пульс "
                 f"{_format_number(measurement['pulse'])}. "
                 "Итог отправляется в семейный канал."
             ),
@@ -1394,7 +1389,7 @@ def _arm_lines(
         for row in rows
     )
     return [
-        f"{title}: {_format_bp_with_projection(averages)}, пульс {averages[2]}",
+        f"{title}: {_format_bp(averages)}, пульс {averages[2]}",
         originals,
     ]
 
@@ -1403,19 +1398,10 @@ def _round_half_up(value: Decimal) -> int:
     return int(value.quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
-def _format_bp_with_projection(values: sqlite3.Row | dict[str, Any] | tuple[int, int, int]) -> str:
-    systolic = Decimal(str(values["systolic"] if not isinstance(values, tuple) else values[0]))
-    diastolic = Decimal(str(values["diastolic"] if not isinstance(values, tuple) else values[1]))
-    projected_systolic = _round_half_up(
-        BP_PROJECTION_SYS_INTERCEPT + BP_PROJECTION_SYS_FACTOR * systolic
-    )
-    projected_diastolic = _round_half_up(
-        diastolic + BP_PROJECTION_DIA_OFFSET - BP_PROJECTION_PP_FACTOR * (systolic - diastolic)
-    )
-    return (
-        f"{_format_number(systolic)}/{_format_number(diastolic)} "
-        f"(proj. {projected_systolic}/{projected_diastolic})"
-    )
+def _format_bp(values: sqlite3.Row | dict[str, Any] | tuple[int, int, int]) -> str:
+    if isinstance(values, tuple):
+        return f"{_format_number(values[0])}/{_format_number(values[1])}"
+    return f"{_format_number(values['systolic'])}/{_format_number(values['diastolic'])}"
 
 
 def _format_number(value: Any) -> str:
